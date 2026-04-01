@@ -4,6 +4,14 @@ Attach the VS Code or Cursor debugger to the MCP server running in MCP Inspector
 
 ## Quick Start Workflow
 
+### 0. Install `debugpy`
+
+From the project virtual environment:
+
+```bash
+pip install debugpy
+```
+
 ### 1. Start the MCP Server from MCP Inspector
 
 Open **MCP Inspector** in your browser at **http://localhost:6274**.

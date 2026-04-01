@@ -116,22 +116,29 @@ For local MCP development and debugging, the MCP Inspector provides a fast manua
 npx @modelcontextprotocol/inspector .venv/bin/python -m workbench_mcp.server
 ```
 
+To launch the MCP server under `debugpy` for breakpoint debugging in the Inspector:
+
+```bash
+npx @modelcontextprotocol/inspector .venv/bin/python -m debugpy --listen 127.0.0.1:5678 -m workbench_mcp.server
+```
+
 After launch, open the Inspector UI, connect over `STDIO`, and test tools such as `health`, `describe_object`, and `exec_proc_preview`.
 
 **Breakpoints (debugpy):** Use port **5678** for the debugger, not 6274 (6274 is only the Inspector web UI). Step-by-step workflow and “what was wrong before” are in **[docs/DEBUG_MCP.md](docs/DEBUG_MCP.md)**.
 
-## Cursor Configuration
+## VS Code Setup
 
-To register the local MCP server in Cursor, add an entry to the MCP configuration file:
+To register the local MCP server in VS Code, add an entry to the workspace MCP configuration file:
 
-- Linux path: `~/.cursor/mcp.json`
+- Workspace file: `.vscode/mcp.json`
 
 Example configuration:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "workbench-mcp": {
+      "type": "stdio",
       "command": "/absolute/path/to/workbench-mcp/.venv/bin/python",
       "args": ["-m", "workbench_mcp.server"]
     }
@@ -139,23 +146,24 @@ Example configuration:
 }
 ```
 
-Replace `<path-to-workbench-mcp>` with the local repository path.
+Replace the command path with the local repository path to your virtual environment Python.
 
-### Secrets: `.env` or Cursor `env` (both work)
+### Secrets and Environment Values
 
-You can put environment values in **either** place:
+You can supply environment values in either place:
 
 1. **`workbench-mcp/.env`**
-2. **`env` in `mcp.json`** — same variable names; Cursor injects them into the MCP process.
+2. **`env` in `.vscode/mcp.json`** — VS Code injects these into the MCP server process.
 
-**Precedence:** process environment (including `mcp.json` → `env`) **overrides** values from `.env` for the same key.
+**Precedence:** process environment (including `.vscode/mcp.json` → `env`) overrides values from `.env` for the same key.
 
-Example with HTTP tuning in Cursor:
+Example with HTTP tuning in VS Code:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "workbench-mcp": {
+      "type": "stdio",
       "command": "/absolute/path/to/workbench-mcp/.venv/bin/python",
       "args": ["-m", "workbench_mcp.server"],
       "env": {
@@ -168,11 +176,11 @@ Example with HTTP tuning in Cursor:
 }
 ```
 
-Do **not** commit real tokens. Prefer a local-only `mcp.json` or omit `env` and use `.env` (which should stay out of git).
+Do **not** commit real tokens. Prefer a local-only workspace configuration or omit `env` and use `.env` (which should stay out of git).
 
-If other MCP servers are already configured, add `workbench-mcp` inside the existing `mcpServers` object instead of replacing the entire file.
+If other MCP servers are already configured, add `workbench-mcp` inside the existing `servers` object instead of replacing the entire file.
 
-After saving `mcp.json`, reload Cursor or refresh MCP servers so the new server is discovered. After the server loads, run the `health` tool before testing database procedures.
+After saving `.vscode/mcp.json`, reload VS Code or refresh MCP servers so the new server is discovered. After the server loads, run the `health` tool before testing database procedures.
 
 ## Initial Tools
 
@@ -183,6 +191,8 @@ After saving `mcp.json`, reload Cursor or refresh MCP servers so the new server 
 - `execute_readonly_sql`
 - `exec_proc_preview`
 - `exec_function_preview`
+- `insert_row`
+- `insert_rows`
 - `http_get`
 - `http_head`
 - `http_post`
@@ -225,5 +235,32 @@ Equivalent MCP tool input:
 {
   "function_name": "sales.\"Fn_GetSalesChamps\"",
   "parameters": [2, 2025, [1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 18, 19], 5]
+}
+```
+
+## Insert Examples
+
+Single row insert:
+
+```json
+{
+  "table_name": "sales.orders",
+  "row": {
+    "customer_id": 10,
+    "status": "new"
+  },
+  "returning_columns": ["order_id"]
+}
+```
+
+Batch insert:
+
+```json
+{
+  "table_name": "sales.orders",
+  "rows": [
+    {"customer_id": 10, "status": "new"},
+    {"customer_id": 11, "status": "pending"}
+  ]
 }
 ```

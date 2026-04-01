@@ -163,6 +163,134 @@ class DatabaseClient:
             return f"{self._quote_ident(schema_name)}.{self._quote_ident(object_name)}"
         return self._quote_ident(object_name)
 
+    def _split_table_name(self, table_name: str) -> tuple[str | None, str]:
+        """Parse a table name into optional schema and object name."""
+        schema_name, object_name, signature = self._split_name_and_signature(table_name)
+        if signature is not None:
+            raise ValueError("Table name must not include a signature.")
+        return schema_name, object_name
+
+    def _normalize_row_data(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Validate and normalize insert row payloads."""
+        if not row:
+            raise ValueError("Insert row data cannot be empty.")
+        normalized: dict[str, Any] = {}
+        for column_name, value in row.items():
+            column = (column_name or "").strip()
+            if not column:
+                raise ValueError("Column names must be non-empty strings.")
+            normalized[column] = value
+        return normalized
+
+    def _build_insert_sql(
+        self,
+        table_name: str,
+        columns: list[str],
+        returning_columns: list[str] | None = None,
+    ) -> str:
+        """Build a parameterized INSERT statement."""
+        schema_name, object_name = self._split_table_name(table_name)
+        qualified_name = self._qualified_name(schema_name, object_name)
+        quoted_columns = ", ".join(self._quote_ident(column) for column in columns)
+        placeholders = ", ".join(["%s"] * len(columns))
+        sql = f"INSERT INTO {qualified_name} ({quoted_columns}) VALUES ({placeholders})"
+        if returning_columns:
+            quoted_returning = ", ".join(
+                self._quote_ident(column) for column in returning_columns
+            )
+            sql += f" RETURNING {quoted_returning}"
+        return sql
+
+    def insert_row(
+        self,
+        table_name: str,
+        row: dict[str, Any],
+        *,
+        returning_columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert a single row into a table."""
+        normalized_row = self._normalize_row_data(row)
+        columns = list(normalized_row.keys())
+        sql = self._build_insert_sql(
+            table_name,
+            columns,
+            returning_columns=returning_columns,
+        )
+
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, [normalized_row[column] for column in columns])
+                returned_rows: list[dict[str, Any]] = []
+                if cursor.description:
+                    returned_columns = [column.name for column in cursor.description]
+                    fetched = cursor.fetchall()
+                    returned_rows = [
+                        {
+                            returned_columns[index]: _normalize_value(value)
+                            for index, value in enumerate(result_row)
+                        }
+                        for result_row in fetched
+                    ]
+
+        return {
+            "table_name": table_name,
+            "rows_inserted": 1,
+            "returning_rows": returned_rows,
+        }
+
+    def insert_rows(
+        self,
+        table_name: str,
+        rows: list[dict[str, Any]],
+        *,
+        returning_columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert multiple rows into a table."""
+        if not rows:
+            raise ValueError("rows cannot be empty.")
+
+        normalized_rows = [self._normalize_row_data(row) for row in rows]
+        columns = list(normalized_rows[0].keys())
+        for index, row in enumerate(normalized_rows[1:], start=2):
+            if list(row.keys()) != columns:
+                raise ValueError(
+                    f"All rows must use the same columns in the same order. Row {index} does not match."
+                )
+
+        sql = self._build_insert_sql(
+            table_name,
+            columns,
+            returning_columns=returning_columns,
+        )
+        parameter_rows = [
+            [row[column] for column in columns]
+            for row in normalized_rows
+        ]
+
+        returning_rows: list[dict[str, Any]] = []
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                if returning_columns:
+                    for parameter_row in parameter_rows:
+                        cursor.execute(sql, parameter_row)
+                        returned_columns = [column.name for column in cursor.description or ()]
+                        fetched = cursor.fetchall()
+                        returning_rows.extend(
+                            {
+                                returned_columns[index]: _normalize_value(value)
+                                for index, value in enumerate(result_row)
+                            }
+                            for result_row in fetched
+                        )
+                else:
+                    cursor.executemany(sql, parameter_rows)
+
+        return {
+            "table_name": table_name,
+            "rows_inserted": len(normalized_rows),
+            "returning_rows": returning_rows,
+        }
+
     def _load_routine_parameters(
         self,
         connection: psycopg.Connection,
@@ -428,14 +556,14 @@ class DatabaseClient:
             c.data_type
         FROM information_schema.columns c
         WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
-          AND (%s IS NULL OR c.table_schema = %s)
+            AND (%s::text IS NULL OR c.table_schema = %s::text)
           AND (
-                %s IS NULL
-                OR c.table_name ILIKE %s
-                OR c.column_name ILIKE %s
+                %s::text IS NULL
+                OR c.table_name ILIKE %s::text
+                OR c.column_name ILIKE %s::text
               )
         ORDER BY c.table_schema, c.table_name, c.ordinal_position
-        LIMIT %s
+          LIMIT %s::integer
         """
         result = self.execute_batch(
             sql,

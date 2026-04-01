@@ -124,3 +124,50 @@ def register_database_tools(mcp: FastMCP) -> None:
         )
         result["warnings"] = guard_result.warnings
         return result
+
+    @mcp.tool()
+    def insert_row(
+        table_name: str,
+        row: dict[str, Any],
+        returning_columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert a single row into a PostgreSQL table.
+
+        Use this tool when you need one explicit insert with structured values.
+        - `table_name`: table target, optionally schema-qualified
+        - `row`: object mapping column names to values
+        - `returning_columns`: optional list of columns to return via `RETURNING`
+
+        Example:
+        - `table_name`: `sales.orders`
+        - `row`: `{ "customer_id": 10, "status": "new" }`
+        - `returning_columns`: `["order_id"]`
+        """
+        return get_database_client().insert_row(
+            table_name,
+            row,
+            returning_columns=returning_columns,
+        )
+
+    @mcp.tool()
+    def insert_rows(
+        table_name: str,
+        rows: list[dict[str, Any]],
+        returning_columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert multiple rows into a PostgreSQL table in one batch.
+
+        Use this tool for bulk inserts where every row has the same columns.
+        - `table_name`: table target, optionally schema-qualified
+        - `rows`: list of objects mapping column names to values
+        - `returning_columns`: optional list of columns to return from inserted rows
+
+        Notes:
+        - Every row must use the same columns in the same order.
+        - Arrays can be passed as JSON lists and psycopg adapts them automatically.
+        """
+        return get_database_client().insert_rows(
+            table_name,
+            rows,
+            returning_columns=returning_columns,
+        )
