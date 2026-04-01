@@ -447,12 +447,18 @@ class DatabaseClient:
     def execute_routine_preview(
         self,
         routine_name: str,
-        parameters: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | list[Any] | tuple[Any, ...] | None = None,
         *,
         max_rows: int | None = None,
     ) -> dict[str, Any]:
-        parameters = parameters or {}
-        ordered_values = list(parameters.values())
+        if parameters is None:
+            ordered_values: list[Any] = []
+        elif isinstance(parameters, dict):
+            ordered_values = list(parameters.values())
+        elif isinstance(parameters, (list, tuple)):
+            ordered_values = list(parameters)
+        else:
+            raise ValueError("parameters must be a dict, list, tuple, or None.")
         row_limit = max_rows or self._settings.db_max_rows
 
         with self.connect() as connection:

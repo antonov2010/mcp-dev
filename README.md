@@ -182,6 +182,7 @@ After saving `mcp.json`, reload Cursor or refresh MCP servers so the new server 
 - `preview_query`
 - `execute_readonly_sql`
 - `exec_proc_preview`
+- `exec_function_preview`
 - `http_get`
 - `http_head`
 - `http_post`
@@ -206,3 +207,23 @@ After `.env` is configured, a typical validation flow is:
 2. Preview the supporting configuration or reference data needed to understand that object.
 3. Run `exec_proc_preview`, `preview_query`, or `execute_readonly_sql` with known inputs.
 4. Compare the returned shape with the feature, investigation, or debugging scenario being evaluated.
+
+## Function Execution Example
+
+For positional PostgreSQL function calls, use `exec_function_preview`.
+Pass PostgreSQL arrays as normal JSON lists.
+
+Example SQL target:
+
+```sql
+select * from sales."Fn_GetSalesChamps"(2, 2025, array[1,2,5,6,7,8,9,10,11,12,15,16,18,19], 5);
+```
+
+Equivalent MCP tool input:
+
+```json
+{
+  "function_name": "sales.\"Fn_GetSalesChamps\"",
+  "parameters": [2, 2025, [1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 18, 19], 5]
+}
+```

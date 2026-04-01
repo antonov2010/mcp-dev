@@ -91,3 +91,36 @@ def register_database_tools(mcp: FastMCP) -> None:
         )
         result["warnings"] = guard_result.warnings
         return result
+
+    @mcp.tool()
+    def exec_function_preview(
+        function_name: str,
+        parameters: list[Any] | None = None,
+        max_rows: int | None = None,
+    ) -> dict[str, Any]:
+        """Execute a PostgreSQL function with positional parameters and return preview rows.
+
+        Use this tool for function calls such as
+        `sales."Fn_GetSalesChamps"(2, 2025, ARRAY[1,2,5], 5)`.
+
+        Pass arguments in positional order using JSON-compatible values:
+        - scalars: `2`, `2025`, `5`
+        - arrays: `[1, 2, 5]`
+        - null: `null`
+
+        PostgreSQL array parameters should be passed as normal lists; psycopg adapts them
+        to PostgreSQL arrays automatically.
+        """
+        guard_sql = f"SELECT {function_name}()"
+        try:
+            guard_result = validate_readonly_sql(guard_sql)
+        except SqlGuardError as exc:
+            raise ValueError(str(exc)) from exc
+
+        result = get_database_client().execute_routine_preview(
+            function_name,
+            parameters=parameters or [],
+            max_rows=max_rows,
+        )
+        result["warnings"] = guard_result.warnings
+        return result

@@ -44,10 +44,13 @@ def _execute_http_request(
 
     request_headers: dict[str, str] = dict(headers or {})
     request_headers.pop("Authorization", None)
+    request_headers.pop("x-user-timezone", None)
     if settings.api_bearer_token:
         request_headers["Authorization"] = (
             f"Bearer {settings.api_bearer_token.get_secret_value()}"
         )
+    if settings.api_user_timezone:
+        request_headers["x-user-timezone"] = settings.api_user_timezone
 
     request_kwargs: dict[str, Any] = {}
     method_upper = method.upper()

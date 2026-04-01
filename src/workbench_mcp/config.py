@@ -30,9 +30,11 @@ class Settings(BaseSettings):
     api_timeout_seconds: float = 30.0  # HTTP request timeout in seconds
     api_max_response_bytes: int = 2_097_152  # Maximum response size (2 MB default)
     api_bearer_token: SecretStr | None = None  # Optional Bearer token for HTTP requests
+    api_user_timezone: str | None = None  # Optional timezone header for HTTP requests
 
     @field_validator(
         "db_application_name",
+        "api_user_timezone",
         mode="before",
     )
     @classmethod
