@@ -320,7 +320,7 @@ class DatabaseClient:
                 ) AS arg_modes,
                 COALESCE(p.proargnames, ARRAY[]::text[]) AS arg_names
             FROM pg_proc p
-            WHERE p.oid = %s
+            WHERE p.oid = %s::oid
         )
         SELECT
             position AS parameter_id,
@@ -340,7 +340,7 @@ class DatabaseClient:
         """
 
         with connection.cursor() as cursor:
-            cursor.execute(sql, [routine_oid])
+            cursor.execute(sql, [str(routine_oid)])
             return [
                 {
                     "parameter_id": row[0],
@@ -377,7 +377,7 @@ class DatabaseClient:
                 pg_get_functiondef(p.oid) AS definition
             FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE p.oid = to_regprocedure(%s)
+            WHERE p.oid = to_regprocedure(%s::text)
             """
             with connection.cursor() as cursor:
                 cursor.execute(exact_sql, [object_name])
@@ -416,8 +416,8 @@ class DatabaseClient:
             pg_get_functiondef(p.oid) AS definition
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE p.proname = %s
-          AND (%s IS NULL OR n.nspname = %s)
+        WHERE p.proname = %s::text
+          AND (%s::text IS NULL OR n.nspname = %s::text)
         ORDER BY (n.nspname = 'public') DESC, n.nspname, p.pronargs, p.oid
         """
         with connection.cursor() as cursor:
@@ -452,6 +452,14 @@ class DatabaseClient:
         }
 
     def describe_object(self, object_name: str) -> dict[str, Any]:
+        schema_name, object_bare_name, signature = self._split_name_and_signature(object_name)
+        
+        # Build fully qualified name for to_regclass
+        if schema_name:
+            qualified = f'"{schema_name}"."{object_bare_name}"'
+        else:
+            qualified = f'"{object_bare_name}"'
+        
         relation_sql = """
         SELECT
             n.nspname AS schema_name,
@@ -483,7 +491,7 @@ class DatabaseClient:
         LEFT JOIN pg_proc ref_proc ON ref_proc.oid = dep.refobjid
         LEFT JOIN pg_namespace ref_ns
             ON ref_ns.oid = COALESCE(ref_class.relnamespace, ref_proc.pronamespace)
-        WHERE dep.objid = %s
+        WHERE dep.objid = %s::oid
           AND COALESCE(ref_class.relname, ref_proc.proname) IS NOT NULL
         ORDER BY ref_ns.nspname, entity_name
         """
@@ -491,10 +499,10 @@ class DatabaseClient:
         with self.connect() as connection:
             cursor = connection.cursor()
 
-            cursor.execute(relation_sql, [object_name])
+            cursor.execute(relation_sql, [qualified])
             details_row = cursor.fetchone()
             if details_row:
-                cursor.execute(refs_sql, [details_row[4]])
+                cursor.execute(refs_sql, [str(details_row[4])])
                 referenced_objects = [
                     {
                         "schema_name": row[0],
@@ -516,7 +524,7 @@ class DatabaseClient:
                 }
 
             routine = self._resolve_routine(connection, object_name)
-            cursor.execute(refs_sql, [routine["oid"]])
+            cursor.execute(refs_sql, [str(routine["oid"])])
             referenced_objects = [
                 {
                     "schema_name": row[0],
