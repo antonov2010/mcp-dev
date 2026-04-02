@@ -25,11 +25,23 @@ def _validate_url(url: str) -> str | None:
     return stripped_url
 
 
+def _normalize_jwt_token(jwt_token: str | None) -> str | None:
+    if jwt_token is None:
+        return None
+    normalized = jwt_token.strip()
+    if not normalized:
+        return None
+    if normalized[:7].lower() == "bearer ":
+        normalized = normalized[7:].strip()
+    return normalized or None
+
+
 def _execute_http_request(
     *,
     method: str,
     url: str,
     headers: dict[str, str] | None = None,
+    jwt_token: str | None = None,
     body: dict[str, Any] | list[Any] | str | None = None,
     content_type: str | None = None,
 ) -> dict[str, Any]:
@@ -45,7 +57,10 @@ def _execute_http_request(
     request_headers: dict[str, str] = dict(headers or {})
     request_headers.pop("Authorization", None)
     request_headers.pop("x-user-timezone", None)
-    if settings.api_bearer_token:
+    resolved_jwt_token = _normalize_jwt_token(jwt_token)
+    if resolved_jwt_token:
+        request_headers["Authorization"] = f"Bearer {resolved_jwt_token}"
+    elif settings.api_bearer_token:
         request_headers["Authorization"] = (
             f"Bearer {settings.api_bearer_token.get_secret_value()}"
         )
@@ -137,33 +152,39 @@ def register_http_tools(mcp: FastMCP) -> None:
     def http_get(
         url: str,
         headers: dict[str, str] | None = None,
+        jwt_token: str | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP GET request.
 
         Use for read-only resource retrieval. Provide a full URL.
-        Authorization is sourced from `API_BEARER_TOKEN` when configured.
-        Optional `headers` allows extra request headers.
+        Pass `jwt_token` to forward the caller's JWT for this request only.
+        If `jwt_token` is omitted, `API_BEARER_TOKEN` is used when configured.
+        `headers.Authorization` is ignored; use `jwt_token` instead.
         """
         return _execute_http_request(
             method="GET",
             url=url,
             headers=headers,
+            jwt_token=jwt_token,
         )
 
     @mcp.tool()
     def http_head(
         url: str,
         headers: dict[str, str] | None = None,
+        jwt_token: str | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP HEAD request.
 
         Use for metadata/status checks without retrieving a full body.
-        Provide a full URL and optional authentication/header values.
+        Pass `jwt_token` to override the default environment token for this call.
+        `headers.Authorization` is ignored; use `jwt_token` instead.
         """
         return _execute_http_request(
             method="HEAD",
             url=url,
             headers=headers,
+            jwt_token=jwt_token,
         )
 
     @mcp.tool()
@@ -172,12 +193,14 @@ def register_http_tools(mcp: FastMCP) -> None:
         body: dict[str, Any] | list[Any] | str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
+        jwt_token: str | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP POST request.
 
         Use for create/actions. Provide a full URL.
         `body` accepts JSON object/array or UTF-8 text.
         `content_type` optionally overrides the `Content-Type` header.
+        Pass `jwt_token` to forward the caller's JWT for this request only.
         """
         return _execute_http_request(
             method="POST",
@@ -185,6 +208,7 @@ def register_http_tools(mcp: FastMCP) -> None:
             body=body,
             content_type=content_type,
             headers=headers,
+            jwt_token=jwt_token,
         )
 
     @mcp.tool()
@@ -193,11 +217,13 @@ def register_http_tools(mcp: FastMCP) -> None:
         body: dict[str, Any] | list[Any] | str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
+        jwt_token: str | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP PUT request.
 
         Use for full updates/replacements.
         `body` accepts JSON object/array or UTF-8 text.
+        Pass `jwt_token` to forward the caller's JWT for this request only.
         """
         return _execute_http_request(
             method="PUT",
@@ -205,6 +231,7 @@ def register_http_tools(mcp: FastMCP) -> None:
             body=body,
             content_type=content_type,
             headers=headers,
+            jwt_token=jwt_token,
         )
 
     @mcp.tool()
@@ -213,11 +240,13 @@ def register_http_tools(mcp: FastMCP) -> None:
         body: dict[str, Any] | list[Any] | str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
+        jwt_token: str | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP PATCH request.
 
         Use for partial updates.
         `body` accepts JSON object/array or UTF-8 text.
+        Pass `jwt_token` to forward the caller's JWT for this request only.
         """
         return _execute_http_request(
             method="PATCH",
@@ -225,6 +254,7 @@ def register_http_tools(mcp: FastMCP) -> None:
             body=body,
             content_type=content_type,
             headers=headers,
+            jwt_token=jwt_token,
         )
 
     @mcp.tool()
@@ -233,11 +263,13 @@ def register_http_tools(mcp: FastMCP) -> None:
         body: dict[str, Any] | list[Any] | str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
+        jwt_token: str | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP DELETE request.
 
         Use for delete operations. Some APIs allow delete payloads; if needed,
         provide `body` as JSON object/array or UTF-8 text.
+        Pass `jwt_token` to forward the caller's JWT for this request only.
         """
         return _execute_http_request(
             method="DELETE",
@@ -245,4 +277,5 @@ def register_http_tools(mcp: FastMCP) -> None:
             body=body,
             content_type=content_type,
             headers=headers,
+            jwt_token=jwt_token,
         )

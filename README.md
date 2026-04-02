@@ -86,6 +86,8 @@ Supported environment settings:
 | `API_TIMEOUT_SECONDS` | HTTP request timeout |
 | `API_MAX_RESPONSE_BYTES` | Max response bytes returned by HTTP tools |
 | `API_VERIFY_SSL` | `true` / `false` SSL verification (local dev certs) |
+| `API_BEARER_TOKEN` | Default JWT used when a tool call does not pass `jwt_token` |
+| `API_USER_TIMEZONE` | Timezone header forwarded as `X-User-Timezone` |
 
 Example call shape:
 
@@ -94,7 +96,58 @@ url: https://localhost:44331/api/breakouts/filter/1871161/dd-table?ParameterSetI
 method: GET
 ```
 
-For authenticated calls, set `API_BEARER_TOKEN` in `.env` (or process env). HTTP tools automatically use it.
+For authenticated calls, set `API_BEARER_TOKEN` in `.env` (or process env). HTTP tools automatically use it unless the caller passes its own `jwt_token`.
+
+## Authorization Handling
+
+HTTP tools support two authorization sources:
+
+1. `jwt_token` passed in the tool call
+2. `API_BEARER_TOKEN` from `.env` or process environment
+
+### Precedence
+
+- If `jwt_token` is provided, that token is forwarded as `Authorization: Bearer <jwt_token>`.
+- If `jwt_token` is omitted or blank, the server falls back to `API_BEARER_TOKEN`.
+- If neither value is present, the request is sent without an `Authorization` header.
+
+### Important rule for agents
+
+Do **not** place the bearer token inside `headers.Authorization`.
+The MCP server strips `Authorization` from `headers` and only accepts auth through the dedicated `jwt_token` field.
+
+This prevents accidental header collisions and makes token precedence explicit.
+
+### Example: use the default server token
+
+```json
+{
+  "url": "https://localhost:5001/api/v1/sales/my-sales"
+}
+```
+
+### Example: forward the caller's own token
+
+```json
+{
+  "url": "https://localhost:5001/api/v1/sales/my-sales",
+  "jwt_token": "eyJhbGciOi..."
+}
+```
+
+### Example: forward caller token with extra headers
+
+```json
+{
+  "url": "https://localhost:5001/api/v1/sales/my-sales",
+  "jwt_token": "eyJhbGciOi...",
+  "headers": {
+    "Accept": "application/json"
+  }
+}
+```
+
+The same `jwt_token` field is available on `http_get`, `http_head`, `http_post`, `http_put`, `http_patch`, and `http_delete`.
 
 ## Run Locally
 
