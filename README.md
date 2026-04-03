@@ -86,6 +86,8 @@ Supported environment settings:
 | `API_TIMEOUT_SECONDS` | HTTP request timeout |
 | `API_MAX_RESPONSE_BYTES` | Max response bytes returned by HTTP tools |
 | `API_VERIFY_SSL` | `true` / `false` SSL verification (local dev certs) |
+| `API_BEARER_TOKEN` | Default JWT used when a tool call does not pass `jwt_token` |
+| `API_USER_TIMEZONE` | Timezone header forwarded as `X-User-Timezone` |
 
 Example call shape:
 
@@ -94,7 +96,98 @@ url: https://localhost:44331/api/breakouts/filter/1871161/dd-table?ParameterSetI
 method: GET
 ```
 
-For authenticated calls, set `API_BEARER_TOKEN` in `.env` (or process env). HTTP tools automatically use it.
+For authenticated calls, set `API_BEARER_TOKEN` in `.env` (or process env). HTTP tools automatically use it unless the caller passes its own `jwt_token`.
+
+## Authorization Handling
+
+HTTP tools support two authorization sources:
+
+1. `jwt_token` passed in the tool call
+2. `API_BEARER_TOKEN` from `.env` or process environment
+
+### Precedence
+
+- If `jwt_token` is provided, that token is forwarded as `Authorization: Bearer <jwt_token>`.
+- If `jwt_token` is omitted or blank, the server falls back to `API_BEARER_TOKEN`.
+- If neither value is present, the request is sent without an `Authorization` header.
+
+### Important rule for agents
+
+Do **not** place the bearer token inside `headers.Authorization`.
+The MCP server strips `Authorization` from `headers` and only accepts auth through the dedicated `jwt_token` field.
+
+This prevents accidental header collisions and makes token precedence explicit.
+
+### Example: use the default server token
+
+```json
+{
+  "url": "https://localhost:5001/api/v1/sales/my-sales"
+}
+```
+
+### Example: forward the caller's own token
+
+```json
+{
+  "url": "https://localhost:5001/api/v1/sales/my-sales",
+  "jwt_token": "eyJhbGciOi..."
+}
+```
+
+### Example: forward caller token with extra headers
+
+```json
+{
+  "url": "https://localhost:5001/api/v1/sales/my-sales",
+  "jwt_token": "eyJhbGciOi...",
+  "headers": {
+    "Accept": "application/json"
+  }
+}
+```
+
+The same `jwt_token` field is available on `http_get`, `http_head`, `http_post`, `http_put`, `http_patch`, and `http_delete`.
+
+## Session Auth
+
+Instead of passing a per-call `jwt_token`, agents can acquire a session-scoped JWT once and have every HTTP tool call use it automatically for the rest of the session.
+
+### How it works
+
+1. An agent calls `auth_start_session` with the target user's email.
+2. The MCP server exchanges the shared secret + email for a scoped JWT from the backend broker (`POST /api/v1/mcp/exchange`).
+3. The token is cached in process memory.
+4. Every subsequent HTTP tool call that omits `jwt_token` uses the session token automatically.
+5. The agent can inspect the session with `auth_status`, switch users with `auth_switch_user`, or clear it with `auth_clear_session`.
+
+### Token precedence (highest → lowest)
+
+| Priority | Source |
+|----------|--------|
+| 1 | `jwt_token` passed in the tool call |
+| 2 | Session token set by `auth_start_session` |
+| 3 | `API_BEARER_TOKEN` environment variable |
+
+### Required environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `MCP_EXCHANGE_URL` | Full URL of the backend broker endpoint |
+| `MCP_SHARED_SECRET` | Shared secret sent in `X-MCP-SECRET` header |
+| `MCP_TOKEN_TTL_BUFFER_SECONDS` | Refresh when fewer than N seconds remain (default: 60) |
+
+### Session auth tools
+
+| Tool | Description |
+|------|-------------|
+| `auth_start_session` | Acquire a session token for the given email |
+| `auth_switch_user` | Switch the active session to a different user (same as start) |
+| `auth_status` | Inspect the current session (email, expiry, needs_refresh) |
+| `auth_clear_session` | Clear the cached session token from memory |
+
+See **[docs/SESSION_AUTH.md](docs/SESSION_AUTH.md)** for the full agent-facing reference.
+
 
 ## Run Locally
 
@@ -199,6 +292,10 @@ After saving `.vscode/mcp.json`, reload VS Code or refresh MCP servers so the ne
 - `http_put`
 - `http_patch`
 - `http_delete`
+- `auth_start_session`
+- `auth_switch_user`
+- `auth_status`
+- `auth_clear_session`
 - `execute_path_bash_script` (script name resolved via `PATH`)
 
 ## Safety Model

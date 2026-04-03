@@ -32,9 +32,15 @@ class Settings(BaseSettings):
     api_bearer_token: SecretStr | None = None  # Optional Bearer token for HTTP requests
     api_user_timezone: str | None = None  # Optional timezone header for HTTP requests
 
+    # MCP session auth — used by auth_start_session tool
+    mcp_exchange_url: str | None = None  # Backend broker URL, e.g. https://host/api/v1/mcp/exchange
+    mcp_shared_secret: SecretStr | None = None  # Shared secret sent in X-MCP-SECRET header
+    mcp_token_ttl_buffer_seconds: int = 60  # Refresh token when fewer than this many seconds remain
+
     @field_validator(
         "db_application_name",
         "api_user_timezone",
+        "mcp_exchange_url",
         mode="before",
     )
     @classmethod
@@ -44,10 +50,10 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("api_bearer_token", mode="before")
+    @field_validator("api_bearer_token", "mcp_shared_secret", mode="before")
     @classmethod
     def empty_api_bearer_token_to_none(cls, value: object) -> object:
-        """Treat empty API bearer token values as None."""
+        """Treat empty bearer token / secret values as None."""
         if value == "":
             return None
         return value
