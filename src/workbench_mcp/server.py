@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 
 from workbench_mcp.tools.database import register_database_tools
 from workbench_mcp.tools.http_requests import register_http_tools
+from workbench_mcp.tools.auth import register_auth_tools
 
 
 LOGGER = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ def build_server() -> FastMCP:
     server = FastMCP("workbench-mcp")
     register_database_tools(server)
     register_http_tools(server)
+    register_auth_tools(server)
     return server
 
 

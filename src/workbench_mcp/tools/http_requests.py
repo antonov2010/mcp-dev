@@ -10,6 +10,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from workbench_mcp.config import get_settings
+from workbench_mcp.auth.session import session_manager
 
 LOGGER = logging.getLogger(__name__)
 _ALLOWED_BODY_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -60,6 +61,8 @@ def _execute_http_request(
     resolved_jwt_token = _normalize_jwt_token(jwt_token)
     if resolved_jwt_token:
         request_headers["Authorization"] = f"Bearer {resolved_jwt_token}"
+    elif (session_token := session_manager.get_token()):
+        request_headers["Authorization"] = f"Bearer {session_token}"
     elif settings.api_bearer_token:
         request_headers["Authorization"] = (
             f"Bearer {settings.api_bearer_token.get_secret_value()}"
