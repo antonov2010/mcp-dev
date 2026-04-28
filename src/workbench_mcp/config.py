@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     api_bearer_token: SecretStr | None = None  # Optional Bearer token for HTTP requests
     api_user_timezone: str | None = None  # Optional timezone header for HTTP requests
 
+    # GitHub integration
+    github_api_base_url: str = "https://api.github.com"  # Base URL for GitHub REST API
+    github_token: SecretStr | None = None  # Optional GitHub token for GitHub API requests
     # MCP session auth — used by auth_start_session tool
     mcp_exchange_url: str | None = None  # Backend broker URL, e.g. https://host/api/v1/mcp/exchange
     mcp_shared_secret: SecretStr | None = None  # Shared secret sent in X-MCP-SECRET header
@@ -58,6 +61,13 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("github_token", mode="before")
+    @classmethod
+    def empty_github_token_to_none(cls, value: object) -> object:
+        """Treat empty GitHub token values as None."""
+        if value == "":
+            return None
+        return value
     model_config = SettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
