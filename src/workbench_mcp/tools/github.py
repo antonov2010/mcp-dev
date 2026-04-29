@@ -18,6 +18,43 @@ from workbench_mcp.auth.session import session_manager
 LOGGER = logging.getLogger(__name__)
 
 
+def _branch_check(
+    owner_arg: str,
+    repo_arg: str,
+    branch: str,
+    base_url: str,
+    headers: dict[str, str],
+    verify_ssl: bool,
+    timeout: float,
+) -> dict[str, object]:
+    """Check whether a branch exists and return diagnostics.
+
+    Returns a dict with keys:
+      - exists: bool
+      - status_code: int | None
+      - body: parsed response or text when available
+      - error: error message for network errors
+    """
+    branch_url = f"{base_url.rstrip('/')}/repos/{owner_arg}/{repo_arg}/branches/{branch}"
+    try:
+        with httpx.Client(verify=verify_ssl, timeout=timeout) as client:
+            resp = client.get(branch_url, headers=headers)
+    except httpx.HTTPError as exc:
+        return {"exists": False, "status_code": None, "body": None, "error": str(exc)}
+
+    content_type = resp.headers.get("content-type", "")
+    body: object
+    if "application/json" in content_type.lower():
+        try:
+            body = resp.json()
+        except json.JSONDecodeError:
+            body = resp.text
+    else:
+        body = resp.text
+
+    return {"exists": resp.status_code == 200, "status_code": resp.status_code, "body": body}
+
+
 def _normalize_token(token: str | None) -> str | None:
     if token is None:
         return None
@@ -67,8 +104,70 @@ def create_pull_request(
         token = settings.github_token.get_secret_value()  # type: ignore[union-attr]
 
     headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
+    headers["X-GitHub-Api-Version"] = "2026-03-10"
     if token:
         headers["Authorization"] = f"Bearer {token}"
+
+    # Pre-validate branches to catch common causes of 422 (missing branch, wrong format)
+    # head may be "user:branch" for forks — detect that and split accordingly.
+    head_owner = owner
+    head_branch = head
+    if ":" in head:
+        head_owner, head_branch = head.split(":", 1)
+
+    base_check = _branch_check(owner, repo_name, base, base_url, headers, verify_ssl, timeout)
+    if base_check.get("status_code") == 403:
+        return {
+            "ok": False,
+            "status_code": 403,
+            "error": f"Permission denied when checking base branch '{base}' in {owner}/{repo_name}.",
+            "details": base_check.get("body"),
+        }
+    if not base_check.get("exists"):
+        return {
+            "ok": False,
+            "error": f"Base branch '{base}' not found in {owner}/{repo_name}.",
+            "status_code": 404,
+            "details": base_check.get("body"),
+        }
+
+    head_check = _branch_check(head_owner, repo_name, head_branch, base_url, headers, verify_ssl, timeout)
+    if head_check.get("status_code") == 403:
+        return {
+            "ok": False,
+            "status_code": 403,
+            "error": (
+                f"Permission denied when checking head branch '{head_branch}' in {head_owner}/{repo_name}."
+            ),
+            "details": head_check.get("body"),
+        }
+
+    if not head_check.get("exists"):
+        # If head specifies a different owner (fork) but repo_name differs, try head owner/repo
+        if head_owner != owner:
+            alt_head_check = _branch_check(head_owner, repo_name, head_branch, base_url, headers, verify_ssl, timeout)
+            if alt_head_check.get("exists"):
+                head_check = alt_head_check
+            else:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Head branch '{head_branch}' not found in {head_owner}/{repo_name}. "
+                        "When creating a PR from a fork, pass 'owner:branch' as head."
+                    ),
+                    "status_code": 404,
+                    "details": head_check.get("body"),
+                }
+        else:
+            return {
+                "ok": False,
+                "error": (
+                    f"Head branch '{head_branch}' not found in {head_owner}/{repo_name}. "
+                    "When creating a PR from a fork, pass 'owner:branch' as head."
+                ),
+                "status_code": 404,
+                "details": head_check.get("body"),
+            }
 
     payload: dict[str, Any] = {
         "title": title,
@@ -99,7 +198,23 @@ def create_pull_request(
 
     if 200 <= response.status_code < 300:
         return {"ok": True, "status_code": response.status_code, "pull_request": parsed}
-    return {"ok": False, "status_code": response.status_code, "error": parsed}
+
+    # Provide clearer diagnostics for validation errors (422) by surfacing the
+    # 'errors' array when available.
+    error_payload: Any = parsed
+    if isinstance(parsed, dict) and "errors" in parsed:
+        # Normalize to a concise message + full details
+        details = parsed.get("errors")
+        message = parsed.get("message", "Validation Failed")
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "error": message,
+            "errors": details,
+            "documentation_url": parsed.get("documentation_url"),
+        }
+
+    return {"ok": False, "status_code": response.status_code, "error": error_payload}
 
 
 def register_github_tools(mcp: FastMCP) -> None:
