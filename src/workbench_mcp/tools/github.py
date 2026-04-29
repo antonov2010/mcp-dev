@@ -55,6 +55,49 @@ def _branch_check(
     return {"exists": resp.status_code == 200, "status_code": resp.status_code, "body": body}
 
 
+def parse_agent_branch(head: str) -> str | None:
+    """Parse an agent-style branch name and return the epic-id.
+
+    Expected format: `agents/{agent-name}/{epic-id}`. Returns the `epic-id`
+    string on success or `None` when the pattern doesn't match.
+    """
+    if not head or not isinstance(head, str):
+        return None
+    parts = head.split("/")
+    if len(parts) == 3 and parts[0] == "agents":
+        return parts[2]
+    return None
+
+
+def _get_repo_default_branch(owner_arg: str, repo_arg: str, base_url: str, headers: dict[str, str], verify_ssl: bool, timeout: float) -> dict[str, object]:
+    """Return diagnostics for the repository including `default_branch` when available.
+
+    Returns a dict with keys: `ok` (bool), `default_branch` (str|None), `status_code`, `body`.
+    """
+    repo_url = f"{base_url.rstrip('/')}/repos/{owner_arg}/{repo_arg}"
+    try:
+        with httpx.Client(verify=verify_ssl, timeout=timeout) as client:
+            resp = client.get(repo_url, headers=headers)
+    except httpx.HTTPError as exc:
+        return {"ok": False, "default_branch": None, "status_code": None, "body": None, "error": str(exc)}
+
+    content_type = resp.headers.get("content-type", "")
+    body: object
+    if "application/json" in content_type.lower():
+        try:
+            body = resp.json()
+        except json.JSONDecodeError:
+            body = resp.text
+    else:
+        body = resp.text
+
+    default_branch = None
+    if isinstance(body, dict):
+        default_branch = body.get("default_branch")
+
+    return {"ok": resp.status_code == 200, "default_branch": default_branch, "status_code": resp.status_code, "body": body}
+
+
 def _normalize_token(token: str | None) -> str | None:
     if token is None:
         return None
@@ -69,7 +112,7 @@ def _normalize_token(token: str | None) -> str | None:
 def create_pull_request(
     repo: str,
     head: str,
-    base: str,
+    base: str | None,
     title: str,
     body: str | None = None,
     draft: bool = False,
@@ -78,6 +121,7 @@ def create_pull_request(
     github_api_base: str | None = None,
     verify_ssl: bool = True,
     timeout: float = 30.0,
+    derive_base_from_head: bool = False,
 ) -> dict[str, Any]:
     """Create a GitHub pull request.
 
@@ -108,29 +152,100 @@ def create_pull_request(
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    # Pre-validate branches to catch common causes of 422 (missing branch, wrong format)
+    # Pre-validate branches and optionally derive base from head
     # head may be "user:branch" for forks — detect that and split accordingly.
     head_owner = owner
     head_branch = head
     if ":" in head:
         head_owner, head_branch = head.split(":", 1)
 
-    base_check = _branch_check(owner, repo_name, base, base_url, headers, verify_ssl, timeout)
+    chosen_base: str | None = base
+
+    # Determine whether we should derive the base. Priority:
+    # 1. explicit `derive_base_from_head` parameter (True/False)
+    # 2. settings.github_derive_base_default when parameter is False — in this
+    #    case we only derive when head/base appear to mismatch or base is missing.
+    settings_default = bool(get_settings().github_derive_base_default)
+    effective_derive = bool(derive_base_from_head)
+    if not effective_derive and settings_default:
+        # conditional derive: only when caller provided base doesn't match the epic inferred
+        inferred = parse_agent_branch(head_branch)
+        if inferred:
+            # derive when no base provided or provided base differs from inferred epic-id
+            if not base or base.strip() == "" or base.strip() != inferred:
+                effective_derive = True
+        else:
+            # no inference possible; derive only if base is missing
+            if not base or base.strip() == "":
+                effective_derive = True
+
+    if effective_derive:
+        derived = parse_agent_branch(head_branch)
+        if derived:
+            chosen_base = derived
+        else:
+            # Fallback order when derivation fails: provided `base` -> configured fallback -> 'develop' -> repo default
+            if base and base.strip():
+                chosen_base = base
+            else:
+                # first check configured fallback from settings
+                cfg_fallback = get_settings().github_fallback_base
+                if cfg_fallback:
+                    fb_check = _branch_check(owner, repo_name, cfg_fallback, base_url, headers, verify_ssl, timeout)
+                    if fb_check.get("exists"):
+                        chosen_base = cfg_fallback
+                    elif fb_check.get("status_code") == 403:
+                        return {
+                            "ok": False,
+                            "status_code": 403,
+                            "error": (
+                                f"Permission denied when checking configured fallback base '{cfg_fallback}' in {owner}/{repo_name}."
+                            ),
+                            "details": fb_check.get("body"),
+                        }
+                if not chosen_base:
+                    # check whether 'develop' exists
+                    dev_check = _branch_check(owner, repo_name, "develop", base_url, headers, verify_ssl, timeout)
+                    if dev_check.get("exists"):
+                        chosen_base = "develop"
+                    else:
+                        # try to get repository default branch
+                        repo_diag = _get_repo_default_branch(owner, repo_name, base_url, headers, verify_ssl, timeout)
+                        if repo_diag.get("default_branch"):
+                            chosen_base = repo_diag.get("default_branch")  # type: ignore[assignment]
+                        else:
+                            # no derived base and no fallbacks available
+                            return {
+                                "ok": False,
+                                "status_code": 400,
+                                "error": (
+                                    "Could not derive base from head, no `base` provided, configured fallback and 'develop' missing, "
+                                    "and repository default branch could not be determined."
+                                ),
+                                "details": repo_diag.get("body"),
+                            }
+
+    # validate chosen_base exists before proceeding
+    if not chosen_base or not isinstance(chosen_base, str) or not chosen_base.strip():
+        return {"ok": False, "status_code": 400, "error": "No base branch specified."}
+
+    base_check = _branch_check(owner, repo_name, chosen_base, base_url, headers, verify_ssl, timeout)
     if base_check.get("status_code") == 403:
         return {
             "ok": False,
             "status_code": 403,
-            "error": f"Permission denied when checking base branch '{base}' in {owner}/{repo_name}.",
+            "error": f"Permission denied when checking base branch '{chosen_base}' in {owner}/{repo_name}.",
             "details": base_check.get("body"),
         }
     if not base_check.get("exists"):
         return {
             "ok": False,
-            "error": f"Base branch '{base}' not found in {owner}/{repo_name}.",
+            "error": f"Base branch '{chosen_base}' not found in {owner}/{repo_name}.",
             "status_code": 404,
             "details": base_check.get("body"),
         }
 
+    # now validate head existence (as before)
     head_check = _branch_check(head_owner, repo_name, head_branch, base_url, headers, verify_ssl, timeout)
     if head_check.get("status_code") == 403:
         return {
@@ -172,7 +287,7 @@ def create_pull_request(
     payload: dict[str, Any] = {
         "title": title,
         "head": head,
-        "base": base,
+        "base": chosen_base,
         "draft": draft,
         "maintainer_can_modify": maintainer_can_modify,
     }

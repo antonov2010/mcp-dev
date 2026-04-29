@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # GitHub integration
     github_api_base_url: str = "https://api.github.com"  # Base URL for GitHub REST API
     github_token: SecretStr | None = None  # Optional GitHub token for GitHub API requests
+    # Control whether the MCP should derive the PR base branch from agent-style
+    # head branches by default when a tool call does not pass `derive_base_from_head`.
+    github_derive_base_default: bool = False
+    # Fallback base branch name to use if derivation fails and no `base` is provided.
+    # If empty, the tool will attempt 'develop' then the repository's default branch.
+    github_fallback_base: str | None = "develop"
     # MCP session auth — used by auth_start_session tool
     mcp_exchange_url: str | None = None  # Backend broker URL, e.g. https://host/api/v1/mcp/exchange
     mcp_shared_secret: SecretStr | None = None  # Shared secret sent in X-MCP-SECRET header
