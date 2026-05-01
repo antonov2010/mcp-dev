@@ -62,6 +62,7 @@ _DELETE_RE = re.compile(
     re.IGNORECASE,
 )
 _CALL_RE = re.compile(r'^\s*call\b', re.IGNORECASE)
+_SET_TIME_ZONE_RE = re.compile(r'^\s*set\s+time\s+zone\s+', re.IGNORECASE)
 
 
 def _normalize_identifier(identifier: str) -> str:
@@ -95,7 +96,7 @@ def _split_statements(sql: str) -> list[str]:
 
 def _validate_statement(statement: str, temp_tables: set[str]) -> set[str]:
     """Validate a single SQL statement against the safety policy.
-    
+
     Returns the set of temporary tables created by this statement (if any).
     Raises SqlGuardError if the statement violates the policy.
     """
@@ -131,6 +132,12 @@ def _validate_statement(statement: str, temp_tables: set[str]) -> set[str]:
         if match and not _is_temp_table(match.group("name"), temp_tables):
             raise SqlGuardError(message)
 
+    if _SET_TIME_ZONE_RE.match(statement):
+        return created_temp_tables
+
+    if re.match(r'^\s*set\b', statement, re.IGNORECASE):
+        raise SqlGuardError("Only SET TIME ZONE is permitted; other SET statements are not allowed.")
+
     return created_temp_tables
 
 
@@ -143,7 +150,7 @@ def strip_sql_comments(sql: str) -> str:
 
 def validate_readonly_sql(sql: str) -> GuardResult:
     """Validate a SQL batch against read-only and safety policies.
-    
+
     Allows SELECT, CTEs, temporary table creation/modification, and stored procedure calls.
     Returns warnings about temp table scope and routine execution risks.
     """
@@ -171,6 +178,10 @@ def validate_readonly_sql(sql: str) -> GuardResult:
         warnings.append(
             "Warning: Procedure or function execution detected; safety depends on the routine's own implementation."
         )
+    if any(_SET_TIME_ZONE_RE.match(statement) for statement in statements):
+        warnings.append(
+            "Warning: Session timezone modification detected."
+        )
 
     return GuardResult(warnings=warnings)
 
@@ -178,7 +189,19 @@ def validate_readonly_sql(sql: str) -> GuardResult:
 def validate_preview_query(sql: str) -> GuardResult:
     """Validate that SQL is a read-only SELECT or CTE query suitable for preview."""
     cleaned = strip_sql_comments(sql).strip()
-    if not re.match(r"^(select|with)\b", cleaned, re.IGNORECASE):
+    if not cleaned:
+        raise SqlGuardError("Provided SQL batch contains no executable statements.")
+
+    statements = _split_statements(cleaned)
+
+    # Find the first non-SET-TIME-ZONE statement to determine query type
+    main_statement = None
+    for stmt in statements:
+        if not _SET_TIME_ZONE_RE.match(stmt):
+            main_statement = stmt
+            break
+
+    if not main_statement or not re.match(r"^(select|with)\b", main_statement, re.IGNORECASE):
         raise SqlGuardError(
             "preview_query accepts only SELECT statements and Common Table Expressions (CTEs)."
         )

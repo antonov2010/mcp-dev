@@ -1,7 +1,7 @@
-"""GitHub integration tools for creating pull requests and related actions.
+"""GitHub integration tools for pull requests and review comments.
 
-This module provides a small, testable helper to create pull requests via the
-GitHub REST API and registers an MCP tool wrapper for agent usage.
+This module provides small, testable helpers to create pull requests and
+manage PR review comments via the GitHub REST API, plus MCP tool wrappers.
 """
 from __future__ import annotations
 
@@ -332,6 +332,214 @@ def create_pull_request(
     return {"ok": False, "status_code": response.status_code, "error": error_payload}
 
 
+def _get_github_headers(github_token: str | None = None) -> dict[str, str]:
+    """Return standard GitHub REST API headers with resolved auth token."""
+    settings = get_settings()
+    token = _normalize_token(github_token)
+    if token is None:
+        token = _normalize_token(session_manager.get_token())
+    if token is None and settings.github_token:
+        token = settings.github_token.get_secret_value()  # type: ignore[union-attr]
+    headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
+    headers["X-GitHub-Api-Version"] = "2026-03-10"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _parse_repo(repo: str) -> tuple[str, str] | None:
+    """Parse 'owner/repo' string. Returns (owner, repo_name) or None if invalid."""
+    if not repo or "/" not in repo:
+        return None
+    return repo.split("/", 1)
+
+
+def _parse_response(response: httpx.Response) -> Any:
+    """Parse an httpx response body as JSON when possible, otherwise text."""
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return response.text
+    return response.text
+
+
+def list_pr_comments(
+    repo: str,
+    pull_number: int,
+    github_token: str | None = None,
+    github_api_base: str | None = None,
+    verify_ssl: bool = True,
+    timeout: float = 30.0,
+    sort: str | None = None,
+    direction: str | None = None,
+    since: str | None = None,
+    per_page: int = 30,
+    page: int = 1,
+) -> dict[str, Any]:
+    """List review comments on a pull request.
+
+    Returns a dict with keys:
+      - ok: bool
+      - comments: list of comment objects (on success)
+      - status_code: int
+      - error: error message (on failure)
+    """
+    parsed = _parse_repo(repo)
+    if not parsed:
+        return {"ok": False, "error": "repo must be in 'owner/repo' format."}
+    owner, repo_name = parsed
+
+    settings = get_settings()
+    base_url = (github_api_base or settings.github_api_base_url or "").strip()
+    if not base_url:
+        return {"ok": False, "error": "GitHub API base URL is not configured."}
+
+    headers = _get_github_headers(github_token)
+    url = f"{base_url.rstrip('/')}/repos/{owner}/{repo_name}/pulls/{pull_number}/comments"
+
+    params: dict[str, Any] = {}
+    if sort:
+        params["sort"] = sort
+    if direction:
+        params["direction"] = direction
+    if since:
+        params["since"] = since
+    if per_page != 30:
+        params["per_page"] = per_page
+    if page != 1:
+        params["page"] = page
+
+    try:
+        with httpx.Client(verify=verify_ssl, timeout=timeout) as client:
+            resp = client.get(url, headers=headers, params=params)
+    except httpx.HTTPError as exc:
+        LOGGER.warning("GitHub list PR comments failed: %s", exc)
+        return {"ok": False, "error": str(exc), "url": url}
+
+    parsed_body = _parse_response(resp)
+    if resp.status_code == 200:
+        return {"ok": True, "status_code": resp.status_code, "comments": parsed_body}
+    return {"ok": False, "status_code": resp.status_code, "error": parsed_body}
+
+
+def create_pr_comment(
+    repo: str,
+    pull_number: int,
+    body: str,
+    commit_id: str,
+    path: str,
+    line: int,
+    side: str = "RIGHT",
+    start_line: int | None = None,
+    start_side: str | None = None,
+    in_reply_to: int | None = None,
+    subject_type: str | None = None,
+    github_token: str | None = None,
+    github_api_base: str | None = None,
+    verify_ssl: bool = True,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Create a review comment on a pull request diff.
+
+    Required fields mirror the GitHub REST API for PR review comments.
+    """
+    parsed = _parse_repo(repo)
+    if not parsed:
+        return {"ok": False, "error": "repo must be in 'owner/repo' format."}
+    owner, repo_name = parsed
+
+    settings = get_settings()
+    base_url = (github_api_base or settings.github_api_base_url or "").strip()
+    if not base_url:
+        return {"ok": False, "error": "GitHub API base URL is not configured."}
+
+    headers = _get_github_headers(github_token)
+    url = f"{base_url.rstrip('/')}/repos/{owner}/{repo_name}/pulls/{pull_number}/comments"
+
+    payload: dict[str, Any] = {
+        "body": body,
+        "commit_id": commit_id,
+        "path": path,
+        "line": line,
+        "side": side,
+    }
+    if start_line is not None:
+        payload["start_line"] = start_line
+    if start_side is not None:
+        payload["start_side"] = start_side
+    if in_reply_to is not None:
+        payload["in_reply_to"] = in_reply_to
+    if subject_type is not None:
+        payload["subject_type"] = subject_type
+
+    try:
+        with httpx.Client(verify=verify_ssl, timeout=timeout) as client:
+            resp = client.post(url, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        LOGGER.warning("GitHub create PR comment failed: %s", exc)
+        return {"ok": False, "error": str(exc), "url": url}
+
+    parsed_body = _parse_response(resp)
+    if resp.status_code == 201:
+        return {"ok": True, "status_code": resp.status_code, "comment": parsed_body}
+    # Surface validation errors clearly
+    if isinstance(parsed_body, dict) and "errors" in parsed_body:
+        return {
+            "ok": False,
+            "status_code": resp.status_code,
+            "error": parsed_body.get("message", "Validation Failed"),
+            "errors": parsed_body.get("errors"),
+            "documentation_url": parsed_body.get("documentation_url"),
+        }
+    return {"ok": False, "status_code": resp.status_code, "error": parsed_body}
+
+
+def update_pr_comment(
+    repo: str,
+    comment_id: int,
+    body: str,
+    github_token: str | None = None,
+    github_api_base: str | None = None,
+    verify_ssl: bool = True,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Update (edit) a pull request review comment.
+
+    This can be used to modify the comment body or, conceptually, to mark a
+    comment as resolved by updating its body with a resolution note. GitHub
+    does not expose a standalone 'resolved' flag for review comments; resolution
+    is handled at the review/thread level.
+    """
+    parsed = _parse_repo(repo)
+    if not parsed:
+        return {"ok": False, "error": "repo must be in 'owner/repo' format."}
+    owner, repo_name = parsed
+
+    settings = get_settings()
+    base_url = (github_api_base or settings.github_api_base_url or "").strip()
+    if not base_url:
+        return {"ok": False, "error": "GitHub API base URL is not configured."}
+
+    headers = _get_github_headers(github_token)
+    url = f"{base_url.rstrip('/')}/repos/{owner}/{repo_name}/pulls/comments/{comment_id}"
+
+    payload = {"body": body}
+
+    try:
+        with httpx.Client(verify=verify_ssl, timeout=timeout) as client:
+            resp = client.patch(url, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        LOGGER.warning("GitHub update PR comment failed: %s", exc)
+        return {"ok": False, "error": str(exc), "url": url}
+
+    parsed_body = _parse_response(resp)
+    if resp.status_code == 200:
+        return {"ok": True, "status_code": resp.status_code, "comment": parsed_body}
+    return {"ok": False, "status_code": resp.status_code, "error": parsed_body}
+
+
 def register_github_tools(mcp: FastMCP) -> None:
     """Register GitHub-related MCP tools."""
 
@@ -361,6 +569,93 @@ def register_github_tools(mcp: FastMCP) -> None:
             body=body,
             draft=draft,
             maintainer_can_modify=maintainer_can_modify,
+            github_token=github_token,
+            github_api_base=(github_api_base or settings.github_api_base_url),
+            verify_ssl=settings.api_verify_ssl,
+            timeout=settings.api_timeout_seconds,
+        )
+
+    @mcp.tool()
+    def github_list_pr_comments(
+        repo: str,
+        pull_number: int,
+        github_token: str | None = None,
+        github_api_base: str | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
+        since: str | None = None,
+        per_page: int = 30,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """List review comments on a pull request."""
+        settings = get_settings()
+        return list_pr_comments(
+            repo=repo,
+            pull_number=pull_number,
+            github_token=github_token,
+            github_api_base=(github_api_base or settings.github_api_base_url),
+            verify_ssl=settings.api_verify_ssl,
+            timeout=settings.api_timeout_seconds,
+            sort=sort,
+            direction=direction,
+            since=since,
+            per_page=per_page,
+            page=page,
+        )
+
+    @mcp.tool()
+    def github_create_pr_comment(
+        repo: str,
+        pull_number: int,
+        body: str,
+        commit_id: str,
+        path: str,
+        line: int,
+        side: str = "RIGHT",
+        start_line: int | None = None,
+        start_side: str | None = None,
+        in_reply_to: int | None = None,
+        subject_type: str | None = None,
+        github_token: str | None = None,
+        github_api_base: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a review comment on a pull request diff."""
+        settings = get_settings()
+        return create_pr_comment(
+            repo=repo,
+            pull_number=pull_number,
+            body=body,
+            commit_id=commit_id,
+            path=path,
+            line=line,
+            side=side,
+            start_line=start_line,
+            start_side=start_side,
+            in_reply_to=in_reply_to,
+            subject_type=subject_type,
+            github_token=github_token,
+            github_api_base=(github_api_base or settings.github_api_base_url),
+            verify_ssl=settings.api_verify_ssl,
+            timeout=settings.api_timeout_seconds,
+        )
+
+    @mcp.tool()
+    def github_update_pr_comment(
+        repo: str,
+        comment_id: int,
+        body: str,
+        github_token: str | None = None,
+        github_api_base: str | None = None,
+    ) -> dict[str, Any]:
+        """Update (edit) a pull request review comment.
+
+        Can be used to modify the comment body or append a resolution note.
+        """
+        settings = get_settings()
+        return update_pr_comment(
+            repo=repo,
+            comment_id=comment_id,
+            body=body,
             github_token=github_token,
             github_api_base=(github_api_base or settings.github_api_base_url),
             verify_ssl=settings.api_verify_ssl,

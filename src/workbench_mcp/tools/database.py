@@ -39,7 +39,17 @@ def register_database_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def describe_object(object_name: str) -> dict[str, Any]:
-        """Retrieve structural details, parameters, and definition for a database object."""
+        """Retrieve structural details, parameters, and definition for a database object.
+
+        When to use this tool:
+        - You need to inspect the schema of a table, view, function, or procedure.
+        - You want to know column names, data types, constraints, or routine signatures.
+        - You are unsure what parameters a function/procedure expects.
+
+        Example:
+            object_name='sales."Vw_CommissionDetails"'
+            object_name='sales."Fn_GetSalesChamps"'
+        """
         return get_database_client().describe_object(object_name)
 
     @mcp.tool()
@@ -48,7 +58,20 @@ def register_database_tools(mcp: FastMCP) -> None:
         search_term: str | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        """Discover tables and columns with optional filtering by schema or keyword search."""
+        """Discover tables and columns with optional filtering by schema or keyword search.
+
+        When to use this tool:
+        - You need to find what tables exist in a schema.
+        - You want to search for columns by name across the database.
+        - You are exploring the database structure before writing a query.
+
+        Parameters:
+        - `schema_name`: filter to a specific schema (e.g., `sales`).
+        - `search_term`: keyword to match against table or column names.
+        - `limit`: maximum number of results to return.
+
+        For detailed schema of a specific object, use `describe_object` instead.
+        """
         return get_database_client().list_tables_and_columns(
             schema_name=schema_name,
             search_term=search_term,
@@ -57,7 +80,22 @@ def register_database_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def preview_query(sql: str, max_rows: int | None = None) -> dict[str, Any]:
-        """Execute read-only SELECT statements and CTEs with safety validation and row limits."""
+        """Execute read-only SELECT statements and CTEs with safety validation and row limits.
+
+        When to use this tool:
+        - You need to run a single SELECT query or CTE to inspect data.
+        - You want the strictest safety guardrails (only SELECT / WITH allowed).
+        - You do NOT need to create temporary tables or call stored procedures.
+
+        Allowed:
+        - SELECT and WITH (CTE) statements.
+        - SET TIME ZONE (e.g., `SET TIME ZONE 'America/Tijuana';`) before the query.
+
+        Not allowed:
+        - CREATE TEMP TABLE, INSERT, UPDATE, DELETE, CALL, or any other DML/DDL.
+
+        If you need temp tables or procedure calls, use `execute_readonly_sql` instead.
+        """
         guard_result = validate_preview_query(sql)
         result = get_database_client().execute_batch(sql, max_rows=max_rows)
         result["warnings"] = guard_result.warnings
@@ -65,7 +103,28 @@ def register_database_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def execute_readonly_sql(sql: str, max_rows: int | None = None) -> dict[str, Any]:
-        """Execute read-only SQL batches with support for temporary tables within the session."""
+        """Execute read-only SQL batches with support for temporary tables within the session.
+
+        When to use this tool:
+        - You need to run a multi-statement batch.
+        - You want to CREATE TEMP TABLE, populate it, and SELECT from it.
+        - You need to CALL a stored procedure or execute a function that returns a result set.
+        - You need to set the session timezone with `SET TIME ZONE` before querying.
+
+        Allowed:
+        - SELECT, WITH (CTEs).
+        - CREATE TEMP TABLE (scoped to the current session).
+        - INSERT / UPDATE / DELETE — but ONLY against temp tables created in the same batch.
+        - DROP TABLE — but ONLY for temp tables created in the same batch.
+        - CALL (stored procedures) and SET TIME ZONE.
+
+        Not allowed:
+        - Permanent table modifications (INSERT/UPDATE/DDELETE on real tables).
+        - DDL such as ALTER, TRUNCATE, GRANT, REVOKE, CREATE permanent objects, etc.
+
+        If you only need a simple SELECT without temp tables or procedures,
+        prefer `preview_query` for stricter safety guarantees.
+        """
         guard_result = validate_readonly_sql(sql)
         result = get_database_client().execute_batch(sql, max_rows=max_rows)
         result["warnings"] = guard_result.warnings
@@ -77,7 +136,20 @@ def register_database_tools(mcp: FastMCP) -> None:
         parameters: dict[str, str | int | float | bool | None] | None = None,
         max_rows: int | None = None,
     ) -> dict[str, Any]:
-        """Execute PostgreSQL functions or procedures with optional parameters and result limiting."""
+        """Execute a PostgreSQL stored procedure by name with named parameters.
+
+        When to use this tool:
+        - You know the exact procedure name and want to call it with named arguments.
+        - The procedure is read-only or returns a preview result set.
+
+        Parameters are passed as a dictionary mapping parameter names to values.
+        Example:
+            proc_name="sales.sp_get_monthly_summary"
+            parameters={"year": 2025, "month": 4}
+
+        If you need to run arbitrary SQL (including CALL with complex logic or temp tables),
+        use `execute_readonly_sql` instead.
+        """
         routine_guard_sql = f"CALL {proc_name}()"
         try:
             guard_result = validate_readonly_sql(routine_guard_sql)
@@ -98,10 +170,11 @@ def register_database_tools(mcp: FastMCP) -> None:
         parameters: list[Any] | None = None,
         max_rows: int | None = None,
     ) -> dict[str, Any]:
-        """Execute a PostgreSQL function with positional parameters and return preview rows.
+        """Execute a PostgreSQL function by name with positional parameters and return preview rows.
 
-        Use this tool for function calls such as
-        `sales."Fn_GetSalesChamps"(2, 2025, ARRAY[1,2,5], 5)`.
+        When to use this tool:
+        - You know the exact function name and want to call it with positional arguments.
+        - The function returns a result set or scalar values suitable for preview.
 
         Pass arguments in positional order using JSON-compatible values:
         - scalars: `2`, `2025`, `5`
@@ -110,6 +183,14 @@ def register_database_tools(mcp: FastMCP) -> None:
 
         PostgreSQL array parameters should be passed as normal lists; psycopg adapts them
         to PostgreSQL arrays automatically.
+
+        Example:
+            function_name='sales."Fn_GetSalesChamps"'
+            parameters=[2, 2025, [1, 2, 5], 5]
+
+        If you need named parameters or are calling a procedure (not a function),
+        use `exec_proc_preview` instead.
+        If you need to run arbitrary SQL, use `execute_readonly_sql` or `preview_query`.
         """
         guard_sql = f"SELECT {function_name}()"
         try:
@@ -133,15 +214,22 @@ def register_database_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Insert a single row into a PostgreSQL table.
 
-        Use this tool when you need one explicit insert with structured values.
-        - `table_name`: table target, optionally schema-qualified
-        - `row`: object mapping column names to values
-        - `returning_columns`: optional list of columns to return via `RETURNING`
+        When to use this tool:
+        - You need to insert exactly one row into a permanent table.
+        - You want a simple, structured API without writing raw SQL.
+
+        Parameters:
+        - `table_name`: target table, optionally schema-qualified (e.g., `sales.orders`).
+        - `row`: dictionary mapping column names to values.
+        - `returning_columns`: optional list of columns to return via `RETURNING`.
 
         Example:
-        - `table_name`: `sales.orders`
-        - `row`: `{ "customer_id": 10, "status": "new" }`
-        - `returning_columns`: `["order_id"]`
+            table_name="sales.orders"
+            row={"customer_id": 10, "status": "new"}
+            returning_columns=["order_id"]
+
+        For bulk inserts, use `insert_rows` instead.
+        For read-only queries, use `preview_query` or `execute_readonly_sql`.
         """
         return get_database_client().insert_row(
             table_name,
@@ -157,14 +245,21 @@ def register_database_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Insert multiple rows into a PostgreSQL table in one batch.
 
-        Use this tool for bulk inserts where every row has the same columns.
-        - `table_name`: table target, optionally schema-qualified
-        - `rows`: list of objects mapping column names to values
-        - `returning_columns`: optional list of columns to return from inserted rows
+        When to use this tool:
+        - You need to insert many rows at once (bulk insert).
+        - All rows share the same columns.
+
+        Parameters:
+        - `table_name`: target table, optionally schema-qualified.
+        - `rows`: list of dictionaries, each mapping column names to values.
+        - `returning_columns`: optional list of columns to return from inserted rows.
 
         Notes:
         - Every row must use the same columns in the same order.
-        - Arrays can be passed as JSON lists and psycopg adapts them automatically.
+        - Arrays can be passed as JSON lists; psycopg adapts them automatically.
+
+        For inserting a single row, use `insert_row` instead.
+        For read-only queries, use `preview_query` or `execute_readonly_sql`.
         """
         return get_database_client().insert_rows(
             table_name,
