@@ -118,9 +118,30 @@ class SessionTokenManager:
         except Exception:  # noqa: BLE001
             return {"ok": False, "error": "Exchange endpoint returned non-JSON body."}
 
-        token: str | None = data.get("token")
+        # Prefer the cookie-based delivery (access_token cookie). Fall back
+        # to the legacy JSON `token` field for compatibility with older
+        # backends/tests.
+        token: str | None = None
+        try:
+            set_cookie = response.headers.get("set-cookie", "") or response.headers.get("Set-Cookie", "")
+        except Exception:
+            set_cookie = ""
+
+        if set_cookie:
+            try:
+                import re
+
+                m = re.search(r"access_token=([^;,\s]+)", set_cookie)
+                if m:
+                    token = m.group(1)
+            except Exception:
+                token = None
+
         if not token:
-            return {"ok": False, "error": "Exchange response missing 'token' field."}
+            token = data.get("token")
+
+        if not token:
+            return {"ok": False, "error": "Exchange response missing 'access_token' cookie."}
 
         expires_in = _parse_expires_in(token)
         with self._lock:
