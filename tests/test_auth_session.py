@@ -44,20 +44,38 @@ def _make_response(
     display_name: str = "Test User",
     user_name: str = "testuser",
     store: str = "Main",
+    cookie_based: bool = True,
 ) -> MagicMock:
     """Return a mock httpx Response."""
     resp = MagicMock()
     resp.status_code = status_code
     if status_code == 200:
-        body: dict = {
-            "email": email,
-            "displayName": display_name,
-            "userName": user_name,
-            "store": store,
-            "token": token or _make_jwt(3600),
-            "impersonated": True,
-        }
-        resp.json.return_value = body
+        # Default to the new cookie-based contract: token delivered via
+        # Set-Cookie (access_token) and JSON body contains user info.
+        tok = token or _make_jwt(3600)
+        if cookie_based:
+            body: dict = {
+                "displayName": display_name,
+                "userName": user_name,
+                "store": store,
+                # note: email intentionally omitted by backend in new contract
+            }
+            resp.json.return_value = body
+            cookie = (
+                f"access_token={tok}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=14400"
+            )
+            resp.headers = {"set-cookie": cookie}
+        else:
+            body: dict = {
+                "email": email,
+                "displayName": display_name,
+                "userName": user_name,
+                "store": store,
+                "token": tok,
+                "impersonated": True,
+            }
+            resp.json.return_value = body
+            resp.headers = {}
     else:
         resp.text = "unauthorized"
         resp.json.side_effect = ValueError("not json")
