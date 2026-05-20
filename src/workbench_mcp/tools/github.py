@@ -541,7 +541,14 @@ def update_pr_comment(
 
 
 def register_github_tools(mcp: FastMCP) -> None:
-    """Register GitHub-related MCP tools."""
+    """Register GitHub-related MCP tools.
+
+    Each tool wraps a helper in this module and returns structured diagnostics
+    on error (status_code, parsed body, and optional `errors` field when
+    returned by GitHub). Tools follow the REST API best-practices: they do
+    not expose tokens, surface rate-limit headers when available, and return
+    clear failure payloads to help caller retry logic.
+    """
 
     @mcp.tool()
     def github_create_pull_request(
@@ -555,10 +562,18 @@ def register_github_tools(mcp: FastMCP) -> None:
         github_token: str | None = None,
         github_api_base: str | None = None,
     ) -> dict[str, Any]:
-        """Create a pull request on GitHub.
+        """Create a pull request on GitHub and return structured diagnostics.
 
-        Uses configured `GITHUB_TOKEN` when available. Prefer passing a token
-        explicitly for transient agent-based requests.
+        Parameters: repo, head, base, title, body (optional), draft (bool),
+        maintainer_can_modify (bool), github_token (optional), github_api_base
+        (optional).
+
+        Returns a dict containing `ok` (bool). On failure the dict includes
+        `status_code`, `error`, and when available `errors` (validation array).
+
+        Failure hints: 401/403=auth/permissions, 404=missing branch/repo,
+        422=validation errors (use `errors`), 429/5xx=rate-limit/server (use
+        Retry-After/X-RateLimit-Reset and backoff with jitter).
         """
         settings = get_settings()
         return create_pull_request(
@@ -587,7 +602,15 @@ def register_github_tools(mcp: FastMCP) -> None:
         per_page: int = 30,
         page: int = 1,
     ) -> dict[str, Any]:
-        """List review comments on a pull request."""
+        """List review comments on a pull request with pagination and diagnostics.
+
+        Parameters: repo, pull_number, optional filters (sort/direction/since),
+        and pagination (per_page, page).
+
+        Returns: `ok=True` and `comments` list on success; on failure includes
+        `status_code` and `error` body. Respect `Link` headers for pagination
+        and use `since` to limit results.
+        """
         settings = get_settings()
         return list_pr_comments(
             repo=repo,
@@ -619,7 +642,16 @@ def register_github_tools(mcp: FastMCP) -> None:
         github_token: str | None = None,
         github_api_base: str | None = None,
     ) -> dict[str, Any]:
-        """Create a review comment on a pull request diff."""
+        """Create a review comment on a PR diff and return detailed diagnostics.
+
+        Parameters: repo, pull_number, body, commit_id, path, line, optional
+        threading controls (side, start_line, start_side, in_reply_to).
+
+        Returns: `ok=True` and `comment` on 201; on failure includes
+        `status_code`, `error`, and optional `errors` for validation issues.
+
+        Failure hints: 422=invalid location, 401/403=auth/perm, 429/5xx=rate-limit/server.
+        """
         settings = get_settings()
         return create_pr_comment(
             repo=repo,
@@ -647,9 +679,14 @@ def register_github_tools(mcp: FastMCP) -> None:
         github_token: str | None = None,
         github_api_base: str | None = None,
     ) -> dict[str, Any]:
-        """Update (edit) a pull request review comment.
+        """Edit an existing PR review comment and return structured diagnostics.
 
-        Can be used to modify the comment body or append a resolution note.
+        Parameters: repo, comment_id, body.
+
+        Returns: `ok=True` and updated `comment` on success; on failure returns
+        `status_code` and `error` (with `errors` when available).
+
+        Failure hints: 404=not found, 401/403=auth/perm, 429/5xx=backoff and retry.
         """
         settings = get_settings()
         return update_pr_comment(
@@ -661,3 +698,32 @@ def register_github_tools(mcp: FastMCP) -> None:
             verify_ssl=settings.api_verify_ssl,
             timeout=settings.api_timeout_seconds,
         )
+
+    @mcp.tool()
+    def github_api_status() -> dict[str, Any]:
+        """Lightweight GitHub API health check returning parsed diagnostics.
+
+        Returns: `ok`, `status_code`, and parsed `details` or `error`.
+
+        Guidance: on 401/403 refresh tokens; on 429/5xx respect `Retry-After`
+        /`X-RateLimit-Reset` and apply exponential backoff with jitter.
+        """
+        settings = get_settings()
+        base_url = (settings.github_api_base_url or "").strip()
+        if not base_url:
+            return {"ok": False, "error": "GitHub API base URL is not configured."}
+
+        headers = _get_github_headers()
+        url = f"{base_url.rstrip('/')}/rate_limit"
+
+        try:
+            with httpx.Client(verify=settings.api_verify_ssl, timeout=settings.api_timeout_seconds) as client:
+                resp = client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            LOGGER.warning("GitHub API status check failed: %s", exc)
+            return {"ok": False, "error": str(exc), "url": url}
+
+        parsed_body = _parse_response(resp)
+        if resp.status_code == 200:
+            return {"ok": True, "status_code": resp.status_code, "details": parsed_body}
+        return {"ok": False, "status_code": resp.status_code, "error": parsed_body}
