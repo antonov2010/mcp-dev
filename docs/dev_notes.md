@@ -13,7 +13,9 @@ pip install debugpy
 ```
 
 ### 1. Start the MCP Server from MCP Inspector
-
+```bash
+npx @modelcontextprotocol/inspector python -m debugpy --listen 127.0.0.1:5678 -m workbench_mcp.server
+```
 Open **MCP Inspector** in your browser at **http://localhost:6274**.
 
 Configure the server launch settings:
